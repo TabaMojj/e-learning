@@ -1,8 +1,10 @@
+from django.db.models import Count
 from django.shortcuts import get_object_or_404, redirect
+from django.views.generic import DetailView
 from django.views.generic.base import TemplateResponseMixin, View
 from django.views.generic.list import ListView
 from .forms import ModuleFormSet
-from .models import Course
+from .models import Course, Subject
 from django.views.generic.edit import CreateView, UpdateView, DeleteView
 from django.urls import reverse_lazy
 from django.contrib.auth.mixins import LoginRequiredMixin, PermissionRequiredMixin
@@ -47,7 +49,7 @@ class CourseUpdateView(OwnerCourseEditMixin, UpdateView):
 
 
 class CourseDeleteView(OwnerCourseMixin, DeleteView):
-    template_name = 'courses/maange/course/delete.html'
+    template_name = 'courses/manage/course/delete.html'
     permission_required = 'courses.delete_course'
 
 
@@ -58,7 +60,8 @@ class CourseModuleUpdateView(TemplateResponseMixin, View):
     def get_formset(self, data=None):
         return ModuleFormSet(instance=self.course, data=data)
 
-    def dispatch(self, request, pk):
+    def dispatch(self, request, *args, **kwargs):
+        pk = kwargs.get('pk')
         self.course = get_object_or_404(Course, id=pk, owner=request.user)
         return super().dispatch(request, pk)
 
@@ -80,41 +83,48 @@ class ContentCreateUpdateView(TemplateResponseMixin, View):
     obj = None
     template_name = 'courses/manage/content/form.html'
 
-    def get_model(self, model_name):
+    @staticmethod
+    def get_model(model_name):
         if model_name in ['text', 'video', 'image', 'file']:
             return apps.get_model(app_label='courses', model_name=model_name)
         return None
 
-    def get_form(self, model, *args, **kwargs):
+    @staticmethod
+    def get_form(model, *args, **kwargs):
         Form = modelform_factory(model, exclude=['owner', 'order', 'created', 'updated'])
         return Form(*args, **kwargs)
 
-    def dispatch(self, request, module_id, model_name, id=None):
+    def dispatch(self, request, *args, **kwargs):
+        module_id = kwargs.get('module_id')
+        model_name = kwargs.get('model_name')
+        _id = kwargs.get('id')
         self.module = get_object_or_404(Module, id=module_id, course__owner=request.user)
         self.model = self.get_model(model_name)
-        if id:
-            self.obj = get_object_or_404(self.model, id=id, owner=request.user)
-        return super().dispatch(request, module_id, model_name, id)
+        if _id:
+            self.obj = get_object_or_404(self.model, id=_id, owner=request.user)
+        return super().dispatch(request, module_id, model_name, _id)
 
-    def get(self, request, module_id, model_name, id=None):
+    def get(self, request, *args, **kwargs):
         form = self.get_form(self.model, instance=self.obj)
         return self.render_to_response({'form': form, 'object': self.obj})
 
-    def post(self, request, module_id, model_name, id=None):
+    def post(self, request, *args, **kwargs):
+        _id = kwargs.get('id')
         form = self.get_form(self.model, instance=self.obj, data=request.POST, files=request.FILES)
         if form.is_valid():
             obj = form.save(commit=False)
             obj.owner = request.user
             obj.save()
-            if not id:
+            if not _id:
                 Content.objects.create(module=self.module, item=obj)
                 return redirect('module_content_list', self.module.id)
             return self.render_to_response({'form': form, 'object': self.obj})
 
 
 class ContentDeleteView(View):
-    def post(self, request, id):
-        content = get_object_or_404(Content, id=id, module__course__owner=request.user)
+    def post(self, request, **kwargs):
+        _id = kwargs.get('id')
+        content = get_object_or_404(Content, id=_id, module__course__owner=request.user)
         module = content.module
         content.item.delete()
         content.delete()
@@ -127,3 +137,22 @@ class ModuleContentListView(TemplateResponseMixin, View):
     def get(self, request, module_id):
         module = get_object_or_404(Module, id=module_id, course__owner=request.user)
         return self.render_to_response({'module': module})
+
+
+class CourseListView(TemplateResponseMixin, View):
+    model = Course
+    template_name = 'courses/course/list.html'
+
+    def get(self, request, *args, **kwargs):
+        subject = kwargs.get('subject')
+        subjects = Subject.objects.annotate(total_courses=Count('courses'))
+        courses = Course.objects.annotate(total_modules=Count('modules'))
+        if subject:
+            subject = get_object_or_404(Subject, slug=subject)
+            courses = courses.filter(subject=subject)
+        return self.render_to_response({'subjects': subjects, 'subject': subject, 'courses': courses})
+
+
+class CourseDetailView(DetailView):
+    model = Course
+    template_name = 'courses/course/detail.html'
